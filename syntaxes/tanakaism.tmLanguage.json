@@ -1,0 +1,47 @@
+{
+  "scopeName": "source.tanakaism",
+  "fileTypes": [
+    "tanakaism"
+  ],
+  "name": "Tanakaism",
+  "patterns": [
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#comments"
+    }
+  ],
+  "repository": {
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.tanakaism",
+          "match": "\\b(tanaka|give|take|if|elif|else|end)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.tanakaism",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.tanakaism",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.tanakaism",
+          "match": "^\\s*love\\b.*$"
+        }
+      ]
+    }
+  }
+}

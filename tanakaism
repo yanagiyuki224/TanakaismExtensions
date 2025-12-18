@@ -1,0 +1,148 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+
+const args = process.argv.slice(2);
+if (args.length === 0) {
+    console.log("使い方: tanakaism <ファイル名.tanakaism>");
+    process.exit(1);
+}
+
+const filePath = path.resolve(process.cwd(), args[0]);
+
+try {
+    const code = fs.readFileSync(filePath, 'utf8');
+    const lines = code.split(/\r?\n/);
+    execute(lines);
+} catch (e) {
+    console.error("エラー:", e.message);
+}
+
+function evaluateCondition(condition, mem) {
+    let evalStr = condition;
+    for (let varName in mem) {
+        const regex = new RegExp(`\\b${varName}\\b`, 'g');
+        let val = mem[varName];
+        evalStr = evalStr.replace(regex, typeof val === 'string' ? `"${val}"` : val);
+    }
+    try {
+        return !!(eval(evalStr));
+    } catch (e) {
+        return false;
+    }
+}
+
+function findJumpTarget(lines, currentPc) {
+    let depth = 0;
+    for (let i = currentPc + 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.match(/^if\b/)) depth++;
+        if (line === 'end') {
+            if (depth === 0) return i;
+            depth--;
+            continue;
+        }
+        if (depth === 0 && (line.match(/^elif\b/) || line === 'else')) {
+            return i;
+        }
+    }
+    return lines.length;
+}
+
+function findEndTag(lines, currentPc) {
+    let depth = 0;
+    for (let i = currentPc + 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.match(/^if\b/)) depth++;
+        if (line === 'end') {
+            if (depth === 0) return i;
+            depth--;
+        }
+    }
+    return lines.length;
+}
+
+function execute(lines) {
+    let memory = {};
+    let pc = 0;
+    const totalLines = lines.length;
+
+    console.log("--- ターミナル版田中イズム 実行開始 ---");
+
+    while (pc < totalLines) {
+        const line = lines[pc].trim();
+
+        if (!line || line.startsWith('love')) {
+            pc++;
+            continue;
+        }
+
+        try {
+            // 1. IF
+            const ifMatch = line.match(/^if\s+(.*)/);
+            if (ifMatch) {
+                if (evaluateCondition(ifMatch[1], memory)) {
+                    pc++;
+                } else {
+                    pc = findJumpTarget(lines, pc);
+                }
+                continue;
+            }
+
+            // 2. ELIF / ELSE
+            // すでにIF/ELIFが成功してここに来た場合は、対応するENDまでジャンプする
+            if (line.match(/^elif\b/) || line === 'else') {
+                pc = findEndTag(lines, pc);
+                pc++; // ENDの次の行へ
+                continue;
+            }
+
+            // 3. END
+            if (line === 'end') {
+                pc++;
+                continue;
+            }
+
+            // 4. TANAKA
+            const tanakaMatch = line.match(/^tanaka\s+(\w+)\s*=\s*(.*)/);
+            if (tanakaMatch) {
+                const varName = tanakaMatch[1];
+                let valStr = tanakaMatch[2].trim();
+                
+                if (valStr.startsWith('"') && valStr.endsWith('"')) {
+                    memory[varName] = valStr.slice(1, -1);
+                } else {
+                    let tempExpr = valStr;
+                    for (let v in memory) {
+                        tempExpr = tempExpr.replace(new RegExp(`\\b${v}\\b`, 'g'), memory[v]);
+                    }
+                    memory[varName] = eval(tempExpr);
+                }
+                pc++;
+                continue;
+            }
+
+            // 5. GIVE
+            const giveMatch = line.match(/^give\s+(.*)/);
+            if (giveMatch) {
+                let expr = giveMatch[1].trim();
+                if (expr.startsWith('"') && expr.endsWith('"')) {
+                    console.log(expr.slice(1, -1));
+                } else if (memory.hasOwnProperty(expr)) {
+                    console.log(memory[expr]);
+                } else {
+                    console.log(expr);
+                }
+                pc++;
+                continue;
+            }
+
+            console.log(`[Line ${pc+1}] 未知のコマンド: ${line}`);
+        } catch (e) {
+            console.error(`[Line ${pc+1}] 実行エラー: ${e.message}`);
+        }
+        pc++;
+    }
+    console.log("--- 実行終了 ---");
+}

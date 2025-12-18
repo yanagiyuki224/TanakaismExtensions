@@ -1,0 +1,51 @@
+{
+  "name": "tanakaism-language-extension",
+  "version": "0.0.2",
+  "icon": "icons/icon.png",
+  "publisher": "yuushi-tanaka",
+  "displayName": "Tanakaism Language Support",
+  "description": "Language support for the Tanakaism programming language.",
+  "engines": {
+    "vscode": "^1.33.1"
+  },
+  "main": "./extension.js",
+  "bin": {
+    "tanakaism": "./tanakaism"
+  },
+  "activationEvents": [
+    "onLanguage:tanakaism",
+    "*"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "oreore.runTanakaism",
+        "title": "Tanakaism: Run Current File"
+      }
+    ],
+    "languages": [
+      {
+        "id": "tanakaism",
+        "aliases": [
+          "Tanakaism",
+          "tanakaism"
+        ],
+        "extensions": [
+          ".tanakaism"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/icon.png",
+          "dark": "./icons/icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "tanakaism",
+        "scopeName": "source.tanakaism",
+        "path": "./syntaxes/tanakaism.tmLanguage.json"
+      }
+    ]
+  }
+}
