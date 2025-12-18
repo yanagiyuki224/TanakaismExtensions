@@ -20,7 +20,7 @@
       "patterns": [
         {
           "name": "keyword.control.tanakaism",
-          "match": "\\b(tanaka|give|take|if|elif|else|end)\\b"
+          "match": "(変数宣言|表示|コメント|もし|違ったら|それ以外|終了)(?=\\s|$)"
         }
       ]
     },
@@ -39,7 +39,7 @@
       "patterns": [
         {
           "name": "comment.line.tanakaism",
-          "match": "^\\s*love\\b.*$"
+          "match": "^\\s*コメント\\b.*$"
         }
       ]
     }

@@ -1,11 +1,27 @@
 #!/usr/bin/env node
-
 const fs = require('fs');
 const path = require('path');
 
+// --- KEYWORDS_START ---
+const K = {
+    "VAR": "変数宣言",
+    "PRINT": "表示",
+    "COMMENT": "コメント",
+    "IF": "もし",
+    "ELIF": "違ったら",
+    "ELSE": "それ以外",
+    "END": "終了"
+};
+// --- KEYWORDS_END ---
+
+// 正規表現用にエスケープする関数
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 const args = process.argv.slice(2);
 if (args.length === 0) {
-    console.log("使い方: tanakaism <ファイル名.tanakaism>");
+    console.log(`使い方: tanakaism <ファイル名.tanakaism>`);
     process.exit(1);
 }
 
@@ -26,36 +42,35 @@ function evaluateCondition(condition, mem) {
         let val = mem[varName];
         evalStr = evalStr.replace(regex, typeof val === 'string' ? `"${val}"` : val);
     }
-    try {
-        return !!(eval(evalStr));
-    } catch (e) {
-        return false;
-    }
+    try { return !!(eval(evalStr)); } catch (e) { return false; }
 }
 
 function findJumpTarget(lines, currentPc) {
     let depth = 0;
+    const ifPattern = new RegExp(`^${escapeRegex(K.IF)}(\\s+|$)`);
+    const elifPattern = new RegExp(`^${escapeRegex(K.ELIF)}(\\s+|$)`);
+    
     for (let i = currentPc + 1; i < lines.length; i++) {
         const line = lines[i].trim();
-        if (line.match(/^if\b/)) depth++;
-        if (line === 'end') {
+        if (line.match(ifPattern)) { depth++; continue; }
+        if (line === K.END) {
             if (depth === 0) return i;
             depth--;
             continue;
         }
-        if (depth === 0 && (line.match(/^elif\b/) || line === 'else')) {
-            return i;
-        }
+        if (depth === 0 && (line.match(elifPattern) || line === K.ELSE)) return i;
     }
     return lines.length;
 }
 
 function findEndTag(lines, currentPc) {
     let depth = 0;
+    const ifPattern = new RegExp(`^${escapeRegex(K.IF)}(\\s+|$)`);
+    
     for (let i = currentPc + 1; i < lines.length; i++) {
         const line = lines[i].trim();
-        if (line.match(/^if\b/)) depth++;
-        if (line === 'end') {
+        if (line.match(ifPattern)) depth++;
+        if (line === K.END) {
             if (depth === 0) return i;
             depth--;
         }
@@ -67,49 +82,37 @@ function execute(lines) {
     let memory = {};
     let pc = 0;
     const totalLines = lines.length;
-
     console.log("--- ターミナル版田中イズム 実行開始 ---");
 
     while (pc < totalLines) {
         const line = lines[pc].trim();
-
-        if (!line || line.startsWith('love')) {
-            pc++;
-            continue;
-        }
+        if (!line || line.startsWith(K.COMMENT)) { pc++; continue; }
 
         try {
-            // 1. IF
-            const ifMatch = line.match(/^if\s+(.*)/);
+            // 1. IF (もし)
+            const ifMatch = line.match(new RegExp(`^${escapeRegex(K.IF)}\\s+(.*)`));
             if (ifMatch) {
-                if (evaluateCondition(ifMatch[1], memory)) {
-                    pc++;
-                } else {
-                    pc = findJumpTarget(lines, pc);
-                }
+                if (evaluateCondition(ifMatch[1], memory)) { pc++; } 
+                else { pc = findJumpTarget(lines, pc); }
                 continue;
             }
-
+            
             // 2. ELIF / ELSE
-            // すでにIF/ELIFが成功してここに来た場合は、対応するENDまでジャンプする
-            if (line.match(/^elif\b/) || line === 'else') {
+            const elifMatch = line.match(new RegExp(`^${escapeRegex(K.ELIF)}(\\s+|$)`));
+            if (elifMatch || line === K.ELSE) {
                 pc = findEndTag(lines, pc);
-                pc++; // ENDの次の行へ
-                continue;
-            }
-
-            // 3. END
-            if (line === 'end') {
                 pc++;
                 continue;
             }
+            
+            // 3. END (終了)
+            if (line === K.END) { pc++; continue; }
 
-            // 4. TANAKA
-            const tanakaMatch = line.match(/^tanaka\s+(\w+)\s*=\s*(.*)/);
-            if (tanakaMatch) {
-                const varName = tanakaMatch[1];
-                let valStr = tanakaMatch[2].trim();
-                
+            // 4. VAR (変数宣言)
+            const varMatch = line.match(new RegExp(`^${escapeRegex(K.VAR)}\\s+(\\w+)\\s*=\\s*(.*)`));
+            if (varMatch) {
+                const varName = varMatch[1];
+                let valStr = varMatch[2].trim();
                 if (valStr.startsWith('"') && valStr.endsWith('"')) {
                     memory[varName] = valStr.slice(1, -1);
                 } else {
@@ -123,17 +126,12 @@ function execute(lines) {
                 continue;
             }
 
-            // 5. GIVE
-            const giveMatch = line.match(/^give\s+(.*)/);
-            if (giveMatch) {
-                let expr = giveMatch[1].trim();
-                if (expr.startsWith('"') && expr.endsWith('"')) {
-                    console.log(expr.slice(1, -1));
-                } else if (memory.hasOwnProperty(expr)) {
-                    console.log(memory[expr]);
-                } else {
-                    console.log(expr);
-                }
+            // 5. PRINT (表示)
+            const printMatch = line.match(new RegExp(`^${escapeRegex(K.PRINT)}\\s+(.*)`));
+            if (printMatch) {
+                let expr = printMatch[1].trim();
+                let out = (expr.startsWith('"') && expr.endsWith('"')) ? expr.slice(1, -1) : (memory.hasOwnProperty(expr) ? memory[expr] : expr);
+                console.log(out);
                 pc++;
                 continue;
             }
