@@ -6,6 +6,9 @@ const path = require('path');
 const K = {
     "VAR": "変数宣言",
     "PRINT": "表示",
+    "INPUT": "受け取る",
+    "LOOP": "ループ",
+    "SCAN": "聞く",
     "COMMENT": "コメント",
     "IF": "もし",
     "ELIF": "違ったら",
@@ -14,7 +17,22 @@ const K = {
 };
 // --- KEYWORDS_END ---
 
-// 正規表現用にエスケープする関数
+function findLoopEnd(lines, currentPc) {
+    let depth = 0;
+    const startPattern = new RegExp(`^(${escapeRegex(K.LOOP)}|${escapeRegex(K.IF)})(\\s+|$)`);
+    
+    for (let i = currentPc + 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.match(startPattern)) {
+            depth++;
+        } else if (line === K.END) {
+            if (depth === 0) return i;
+            depth--;
+        }
+    }
+    return lines.length;
+}
+
 function escapeRegex(str) {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -49,7 +67,7 @@ function findJumpTarget(lines, currentPc) {
     let depth = 0;
     const ifPattern = new RegExp(`^${escapeRegex(K.IF)}(\\s+|$)`);
     const elifPattern = new RegExp(`^${escapeRegex(K.ELIF)}(\\s+|$)`);
-    
+
     for (let i = currentPc + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line.match(ifPattern)) { depth++; continue; }
@@ -66,7 +84,7 @@ function findJumpTarget(lines, currentPc) {
 function findEndTag(lines, currentPc) {
     let depth = 0;
     const ifPattern = new RegExp(`^${escapeRegex(K.IF)}(\\s+|$)`);
-    
+
     for (let i = currentPc + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line.match(ifPattern)) depth++;
@@ -81,6 +99,7 @@ function findEndTag(lines, currentPc) {
 function execute(lines) {
     let memory = {};
     let pc = 0;
+    let blockStack = [];
     const totalLines = lines.length;
     console.log("--- ターミナル版田中イズム 実行開始 ---");
 
@@ -89,26 +108,107 @@ function execute(lines) {
         if (!line || line.startsWith(K.COMMENT)) { pc++; continue; }
 
         try {
-            // 1. IF (もし)
+            // 1. LOOP (ループ)
+            const loopMatch = line.match(new RegExp(`^${escapeRegex(K.LOOP)}\\s+(.*)`));
+            if (loopMatch) {
+                const condition = loopMatch[1];
+                if (evaluateCondition(condition, memory)) {
+                    // ループ開始位置と条件を記録
+                    blockStack.push({ type: 'LOOP', startPc: pc, condition: condition });
+                    pc++;
+                } else {
+                    // 条件不成立ならループの終わりまでジャンプ
+                    pc = findEndTag(lines, pc) + 1;
+                }
+                continue;
+            }
+
+            // 2. IF (もし)
             const ifMatch = line.match(new RegExp(`^${escapeRegex(K.IF)}\\s+(.*)`));
             if (ifMatch) {
-                if (evaluateCondition(ifMatch[1], memory)) { pc++; } 
-                else { pc = findJumpTarget(lines, pc); }
+                if (evaluateCondition(ifMatch[1], memory)) {
+                    blockStack.push({ type: 'IF', entered: true });
+                    pc++;
+                } else {
+                    blockStack.push({ type: 'IF', entered: false });
+                    pc = findJumpTarget(lines, pc); 
+                }
                 continue;
             }
-            
-            // 2. ELIF / ELSE
-            const elifMatch = line.match(new RegExp(`^${escapeRegex(K.ELIF)}(\\s+|$)`));
-            if (elifMatch || line === K.ELSE) {
-                pc = findEndTag(lines, pc);
-                pc++;
-                continue;
-            }
-            
-            // 3. END (終了)
-            if (line === K.END) { pc++; continue; }
 
-            // 4. VAR (変数宣言)
+            // 3. END (終了) - 修正版
+            if (line === K.END) {
+                const lastBlock = blockStack[blockStack.length - 1];
+                
+                if (lastBlock && lastBlock.type === 'LOOP') {
+                    // ループの終了タグかどうかを確認
+                    // ループの開始位置から対応する終了タグを探して、それが現在位置と一致するか確認
+                    const loopEndPc = findEndTag(lines, lastBlock.startPc);
+                    
+                    if (loopEndPc === pc) {
+                        // これはループの終了タグ
+                        blockStack.pop();
+                        if (evaluateCondition(lastBlock.condition, memory)) {
+                            // 条件がまだ真ならループ開始位置に戻る
+                            blockStack.push(lastBlock);
+                            pc = lastBlock.startPc;
+                        } else {
+                            // 条件が偽になったらループを抜ける
+                            pc++;
+                        }
+                    } else {
+                        // ループ内のIF文の終了タグ
+                        blockStack.pop();
+                        pc++;
+                    }
+                } else if (lastBlock && lastBlock.type === 'IF') {
+                    // IF文の終了タグ
+                    blockStack.pop();
+                    pc++;
+                } else {
+                    // スタックが空の場合
+                    pc++;
+                }
+                continue;
+            }
+
+            // 4. ELIF / ELSE
+            const elifMatch = line.match(new RegExp(`^${escapeRegex(K.ELIF)}\\s+(.*)`));
+            if (elifMatch) {
+                // ELIF は前の IF/ELIF が成功した場合にスキップ
+                const lastBlock = blockStack[blockStack.length - 1];
+                if (lastBlock && lastBlock.type === 'IF' && lastBlock.entered) {
+                    // 前のブロックに入っていたらこのELIFをスキップ
+                    pc = findEndTag(lines, pc) + 1;
+                } else if (evaluateCondition(elifMatch[1], memory)) {
+                    // 条件成立
+                    if (lastBlock && lastBlock.type === 'IF') {
+                        lastBlock.entered = true;
+                    }
+                    pc++;
+                } else {
+                    // 条件不成立、次のELIF/ELSEへ
+                    pc = findJumpTarget(lines, pc);
+                }
+                continue;
+            }
+            
+            if (line === K.ELSE) {
+                const lastBlock = blockStack[blockStack.length - 1];
+                if (lastBlock && lastBlock.type === 'IF' && lastBlock.entered) {
+                    // 前のブロックに入っていたらこのELSEをスキップ
+                    pc = findEndTag(lines, pc) + 1;
+                } else {
+                    // ELSEブロックに入る
+                    if (lastBlock && lastBlock.type === 'IF') {
+                        lastBlock.entered = true;
+                    }
+                    pc++;
+                }
+                continue;
+            }
+
+            // 5. VAR (変数宣言)
             const varMatch = line.match(new RegExp(`^${escapeRegex(K.VAR)}\\s+(\\w+)\\s*=\\s*(.*)`));
             if (varMatch) {
                 const varName = varMatch[1];
@@ -126,19 +226,72 @@ function execute(lines) {
                 continue;
             }
 
-            // 5. PRINT (表示)
+            // 6. PRINT (表示)
             const printMatch = line.match(new RegExp(`^${escapeRegex(K.PRINT)}\\s+(.*)`));
             if (printMatch) {
                 let expr = printMatch[1].trim();
-                let out = (expr.startsWith('"') && expr.endsWith('"')) ? expr.slice(1, -1) : (memory.hasOwnProperty(expr) ? memory[expr] : expr);
-                console.log(out);
+                try {
+                    let evalExpr = expr;
+                    for (let v in memory) {
+                        const regex = new RegExp(`\\b${v}\\b`, 'g');
+                        const val = typeof memory[v] === 'string' ? JSON.stringify(memory[v]) : memory[v];
+                        evalExpr = evalExpr.replace(regex, val);
+                    }
+                    console.log(eval(evalExpr));
+                } catch (e) {
+                    console.log(memory.hasOwnProperty(expr) ? memory[expr] : expr.replace(/"/g, ''));
+                }
                 pc++;
                 continue;
             }
 
-            console.log(`[Line ${pc+1}] 未知のコマンド: ${line}`);
+            // 7. INPUT (受け取る)
+            const inputMatch = line.match(new RegExp(`^${K.INPUT}\\s+(\\w+)`));
+            if (inputMatch) {
+                const varName = inputMatch[1];
+                process.stdout.write(`${varName} の値を入力してください: `);
+
+                const buffer = Buffer.alloc(1024);
+                const bytesRead = fs.readSync(0, buffer, 0, 1024);
+                const userInput = buffer.toString('utf8', 0, bytesRead).trim();
+
+                memory[varName] = isNaN(userInput) ? userInput : Number(userInput);
+                pc++;
+                continue;
+            }
+
+            // 8. SCAN (聞く)
+            const scanMatch = line.match(new RegExp(`^(\\w+)\\s*=\\s*${escapeRegex(K.SCAN)}\\s+(.*)`));
+            if (scanMatch) {
+                const varName = scanMatch[1];
+                let promptExpr = scanMatch[2].trim();
+
+                let evalPrompt = promptExpr;
+                for (let v in memory) {
+                    const regex = new RegExp(`\\b${v}\\b`, 'g');
+                    const val = typeof memory[v] === 'string' ? JSON.stringify(memory[v]) : memory[v];
+                    evalPrompt = evalPrompt.replace(regex, val);
+                }
+
+                try {
+                    const finalPrompt = eval(evalPrompt);
+                    process.stdout.write(`${finalPrompt}: `);
+
+                    const buffer = Buffer.alloc(1024);
+                    const bytesRead = fs.readSync(0, buffer, 0, 1024);
+                    const userInput = buffer.toString('utf8', 0, bytesRead).trim();
+
+                    memory[varName] = isNaN(userInput) || userInput === "" ? userInput : Number(userInput);
+                } catch (e) {
+                    console.error(`質問内容のエラー: ${e.message}`);
+                }
+                pc++;
+                continue;
+            }
+
+            console.log(`[Line ${pc + 1}] 未知のコマンド: ${line}`);
         } catch (e) {
-            console.error(`[Line ${pc+1}] 実行エラー: ${e.message}`);
+            console.error(`[Line ${pc + 1}] 実行エラー: ${e.message}`);
         }
         pc++;
     }

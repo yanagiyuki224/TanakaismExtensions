@@ -4,6 +4,9 @@ const vscode = require('vscode');
 const K = {
     "VAR": "変数宣言",
     "PRINT": "表示",
+    "INPUT": "受け取る",
+    "LOOP": "ループ",
+    "SCAN": "聞く",
     "COMMENT": "コメント",
     "IF": "もし",
     "ELIF": "違ったら",
@@ -17,6 +20,22 @@ function escapeRegex(str) {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function findLoopEnd(lines, currentPc) {
+    let depth = 0;
+    const startPattern = new RegExp(`^(${escapeRegex(K.LOOP)}|${escapeRegex(K.IF)})(\\s+|$)`);
+    
+    for (let i = currentPc + 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.match(startPattern)) {
+            depth++;
+        } else if (line === K.END) {
+            if (depth === 0) return i;
+            depth--;
+        }
+    }
+    return lines.length;
+}
+
 let memory = {};
 let outputChannel;
 
@@ -25,17 +44,18 @@ function evaluateCondition(condition, mem) {
     let evalStr = condition;
     for (let varName in mem) {
         const regex = new RegExp(`\\b${varName}\\b`, 'g');
-        evalStr = evalStr.replace(regex, JSON.stringify(mem[varName]));
+        let val = mem[varName];
+        evalStr = evalStr.replace(regex, typeof val === 'string' ? `"${val}"` : val);
     }
     try { return !!(eval(evalStr)); } catch (e) { return false; }
 }
 
-// ジャンプ先探し（日本語対応：\\bの代わりにスペースまたは行末を判定）
+// ジャンプ先探し
 function findJumpTarget(lines, currentPc) {
     let depth = 0;
     const ifPattern = new RegExp(`^${escapeRegex(K.IF)}(\\s+|$)`);
     const elifPattern = new RegExp(`^${escapeRegex(K.ELIF)}(\\s+|$)`);
-    
+
     for (let i = currentPc + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line.match(ifPattern)) { depth++; continue; }
@@ -54,7 +74,7 @@ function findJumpTarget(lines, currentPc) {
 function findEndTag(lines, currentPc) {
     let depth = 0;
     const ifPattern = new RegExp(`^${escapeRegex(K.IF)}(\\s+|$)`);
-    
+
     for (let i = currentPc + 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (line.match(ifPattern)) depth++;
@@ -67,9 +87,10 @@ function findEndTag(lines, currentPc) {
 }
 
 // VSCode用実行エンジン
-function executeCore(lines, channel) {
+async function executeCore(lines, channel) {
     memory = {};
     let pc = 0;
+    let blockStack = []; // ブロック情報を保存するスタック
     const totalLines = lines.length;
     channel.appendLine(`--- Tanakaism 実行開始 ---`);
 
@@ -78,30 +99,69 @@ function executeCore(lines, channel) {
         if (!line || line.startsWith(K.COMMENT)) { pc++; continue; }
 
         try {
-            // IF
-            const ifMatch = line.match(new RegExp(`^${escapeRegex(K.IF)}\\s+(.*)`));
-            if (ifMatch) {
-                if (evaluateCondition(ifMatch[1], memory)) { pc++; } 
-                else { pc = findJumpTarget(lines, pc); }
+            // 1. LOOP (ループ)
+            const loopMatch = line.match(new RegExp(`^${escapeRegex(K.LOOP)}\\s+(.*)`));
+            if (loopMatch) {
+                const condition = loopMatch[1];
+                if (evaluateCondition(condition, memory)) {
+                    // ループ開始位置と条件を記録
+                    blockStack.push({ type: 'LOOP', startPc: pc, condition: condition });
+                    pc++;
+                } else {
+                    // 条件不成立ならループの終わりまでジャンプ
+                    pc = findEndTag(lines, pc) + 1;
+                }
                 continue;
             }
-            
-            // ELIF
+
+            // 2. IF (もし)
+            const ifMatch = line.match(new RegExp(`^${escapeRegex(K.IF)}\\s+(.*)`));
+            if (ifMatch) {
+                if (evaluateCondition(ifMatch[1], memory)) {
+                    blockStack.push({ type: 'IF' });
+                    pc++;
+                } else {
+                    pc = findJumpTarget(lines, pc);
+                }
+                continue;
+            }
+
+            // 3. END (終了) - 修正版
+            if (line === K.END) {
+                const lastBlock = blockStack.pop();
+                if (lastBlock && lastBlock.type === 'LOOP') {
+                    // ループの終わりなら、条件を再評価
+                    if (evaluateCondition(lastBlock.condition, memory)) {
+                        // 条件がまだ真ならループ開始位置に戻る（条件行自体に戻る）
+                        blockStack.push(lastBlock);
+                        pc = lastBlock.startPc; // ループの開始行に戻る（条件を再評価）
+                    } else {
+                        // 条件が偽になったらループを抜ける
+                        pc++;
+                    }
+                } else {
+                    // IF文などの終わりなら、ただ次に進む
+                    pc++;
+                }
+                continue;
+            }
+
+            // 4. ELIF (違ったら)
             const elifMatch = line.match(new RegExp(`^${escapeRegex(K.ELIF)}\\s+(.*)`));
             if (elifMatch) {
                 pc = findEndTag(lines, pc);
+                pc++;
                 continue;
             }
-            
-            // ELSE
+
+            // 5. ELSE (それ以外)
             if (line === K.ELSE) {
                 pc = findEndTag(lines, pc);
+                pc++;
                 continue;
             }
-            
-            if (line === K.END) { pc++; continue; }
 
-            // 変数代入 (VAR)
+            // 6. VAR (変数宣言)
             const varMatch = line.match(new RegExp(`^${escapeRegex(K.VAR)}\\s+(\\w+)\\s*=\\s*(.*)`));
             if (varMatch) {
                 const var_name = varMatch[1];
@@ -113,22 +173,83 @@ function executeCore(lines, channel) {
                     for (let v in memory) {
                         evalStr = evalStr.replace(new RegExp(`\\b${v}\\b`, 'g'), memory[v]);
                     }
-                    memory[var_name] = isNaN(evalStr) ? evalStr : eval(evalStr);
+                    memory[var_name] = eval(evalStr);
                 }
-                pc++; continue;
-            } 
-            // 出力 (PRINT)
+                pc++;
+                continue;
+            }
+
+            // 7. PRINT (表示)
             const printMatch = line.match(new RegExp(`^${escapeRegex(K.PRINT)}\\s+(.*)`));
             if (printMatch) {
                 let expr = printMatch[1].trim();
-                let out = (expr.startsWith('"') && expr.endsWith('"')) ? expr.slice(1, -1) : (memory.hasOwnProperty(expr) ? memory[expr] : expr);
-                channel.appendLine(String(out));
-                pc++; continue;
+                try {
+                    let evalExpr = expr;
+                    for (let v in memory) {
+                        const regex = new RegExp(`\\b${v}\\b`, 'g');
+                        const val = typeof memory[v] === 'string' ? JSON.stringify(memory[v]) : memory[v];
+                        evalExpr = evalExpr.replace(regex, val);
+                    }
+                    let out = eval(evalExpr);
+                    channel.appendLine(String(out));
+                } catch (e) {
+                    channel.appendLine(memory.hasOwnProperty(expr) ? String(memory[expr]) : expr.replace(/"/g, ''));
+                }
+                pc++;
+                continue;
             }
 
-            channel.appendLine(`[Line ${pc+1}] 未知のコマンド: ${line}`);
+            // 8. INPUT (受け取る)
+            const inputMatch = line.match(new RegExp(`^${escapeRegex(K.INPUT)}\\s+(\\w+)`));
+            if (inputMatch) {
+                const varName = inputMatch[1];
+                const userInput = await vscode.window.showInputBox({
+                    prompt: `${varName} の値を入力してください`
+                });
+
+                if (userInput === undefined) {
+                    channel.appendLine(`[Line ${pc + 1}] 入力がキャンセルされました`);
+                    pc++;
+                    continue;
+                }
+
+                memory[varName] = isNaN(userInput) ? userInput : Number(userInput);
+                pc++;
+                continue;
+            }
+
+            // 9. SCAN (聞く)
+            const scanMatch = line.match(new RegExp(`^(\\w+)\\s*=\\s*${escapeRegex(K.SCAN)}\\s+(.*)`));
+            if (scanMatch) {
+                const varName = scanMatch[1];
+                let promptExpr = scanMatch[2].trim();
+
+                let evalPrompt = promptExpr;
+                for (let v in memory) {
+                    const regex = new RegExp(`\\b${v}\\b`, 'g');
+                    const val = typeof memory[v] === 'string' ? JSON.stringify(memory[v]) : memory[v];
+                    evalPrompt = evalPrompt.replace(regex, val);
+                }
+
+                try {
+                    const finalPrompt = eval(evalPrompt);
+                    const userInput = await vscode.window.showInputBox({
+                        prompt: String(finalPrompt)
+                    });
+
+                    if (userInput !== undefined) {
+                        memory[varName] = isNaN(userInput) || userInput === "" ? userInput : Number(userInput);
+                    }
+                } catch (e) {
+                    channel.appendLine(`[Line ${pc + 1}] 質問内容のエラー: ${e.message}`);
+                }
+                pc++;
+                continue;
+            }
+
+            channel.appendLine(`[Line ${pc + 1}] 未知のコマンド: ${line}`);
         } catch (e) {
-            channel.appendLine(`[Line ${pc+1}] エラー: ${e.message}`);
+            channel.appendLine(`[Line ${pc + 1}] エラー: ${e.message}`);
         }
         pc++;
     }
